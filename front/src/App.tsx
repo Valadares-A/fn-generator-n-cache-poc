@@ -1,7 +1,7 @@
 // import reactLogo from './assets/react.svg'
 // import viteLogo from '/vite.svg'
 import './App.css'
-import { MailOutlined, AppstoreOutlined, SettingOutlined, BarChartOutlined, MenuOutlined, FieldTimeOutlined, ReconciliationOutlined } from '@ant-design/icons';
+import { MailOutlined, AppstoreOutlined, SettingOutlined, BarChartOutlined, MenuOutlined, FieldTimeOutlined, ReconciliationOutlined, CloudServerOutlined } from '@ant-design/icons';
 import { Button, MenuProps, Space, Tooltip } from 'antd';
 import { Breadcrumb, Layout, Menu, theme, message, Select } from 'antd';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
@@ -21,6 +21,16 @@ const items: MenuProps['items'] = [
     label: 'Yield Analysis',
     key: 'yieldAnalysis',
     icon: <ReconciliationOutlined />,
+  },
+  {
+    label: 'Server-Side Events',
+    key: 'sse',
+    icon: <CloudServerOutlined />,
+  },
+  {
+    label: 'Timeline V2',
+    key: 'tlv2',
+    icon: <CloudServerOutlined />,
   },
   {
     label: 'Navigation One',
@@ -167,9 +177,39 @@ function App() {
 
   const [current, setCurrent] = useState('yieldAnalysis');
 
+  //###SSE
+  const [facts, setFacts] = useState([]);
+  const [listening, setListening] = useState(true);
+  const [sseEvent, setsseEvent] = useState<EventSource>(null as any);
+
+  useEffect(() => {
+    if (!listening) {
+      const events = new EventSource('http://localhost:3001/events');
+
+      events.onmessage = (event) => {
+        const parsedData = JSON.parse(event.data);
+
+        setFacts((facts) => facts.concat(parsedData));
+      };
+
+      setListening(true);
+      setsseEvent(events);
+    }
+    if (current !== 'sse' && listening) {
+      sseEvent?.close();
+      setsseEvent(null as any);
+      setFacts([]);
+    }
+    // }, [listening, facts, current]);
+  }, [listening, current]);
+  //###SSE end
+
   const onClick: MenuProps['onClick'] = (e) => {
     console.log('click ', e);
     setCurrent(e.key);
+    if (e.key === 'sse') {
+      setListening(false);
+    }
     toggleSidebar('left', map.current)
   };
 
@@ -449,6 +489,63 @@ function App() {
                   getFarms(option.value);
                   getCropList(option.value);
                   break;
+                case 'tlv2':
+                  if (selectedOrg && sseEvent) {
+                    sseEvent.close();
+                  }
+                  setSelectedOrg(option);
+                  setfieldList([])
+                  const url = `${BFF_URL}/org/${option.value}/fields`;
+                  const appFields: Array<any> = [];
+                  const events = new EventSource(url);
+                  events.onmessage = (event) => {
+                    console.log(event)
+                    const { type, fields } = JSON.parse(event.data);
+                    if (type === 'end') {
+                      events.close();
+                      return;
+                    }
+                    fields.forEach((field: any) => {
+                      axios.get(`${BFF_URL}/operations?orgId=${field.orgId}&fieldId=${field.id}`).then(({ data }) => {
+                        field.operations = data;
+                      });
+                      field.label = field.name
+                      field.value = field.id
+                      appFields.push(field);
+                    })
+                    const collection = {
+                      type: 'FeatureCollection' as any,
+                      features: appFields.map((field) => {
+                        return {
+                          type: 'Feature',
+                          geometry: field.geometry
+                        }
+                      }),
+                    };
+                    const collectionCluster = {
+                      type: 'FeatureCollection' as any,
+                      features: appFields.map((field) => {
+                        return {
+                          type: 'Feature',
+                          geometry: field.centroid ? field.centroid : centroid(field.geometry).geometry
+                        }
+                      }),
+                    };
+                    console.log(appFields)
+                    setfieldList(appFields)
+                    const fieldsSource = map.current.getSource('fields') as GeoJSONSource;
+                    const clusterSource = map.current.getSource('cluster') as GeoJSONSource;
+                    fieldsSource.setData(collection as any);
+                    clusterSource.setData(collectionCluster as any);
+
+                    // setFacts((facts) => facts.concat(parsedData));
+                  };
+                  events.addEventListener('doneEvent', (e) => {
+                    console.log(e)
+                    events.close();
+                  })
+                  setsseEvent(events);
+                  break;
 
                 default:
                   break;
@@ -483,6 +580,7 @@ function App() {
         </Space>
       </Header>
       <Layout>
+
         <div ref={mapContainer} className="map-container" >
           {current === 'yieldAnalysis' ? (
             <Space wrap style={{
@@ -539,16 +637,6 @@ function App() {
             </div>
           </div>
           {current === 'yieldAnalysis' ? (<>
-            <div id="right" className="sidebar flex-center right collapsed">
-              <div className="sidebar-content rounded-rect flex-center">
-                Right Sidebar content
-                <div className="sidebar-toggle rounded-rect right" onClick={() => {
-                  toggleSidebar('right', map.current)
-                }}>
-                  &larr;
-                </div>
-              </div>
-            </div>
             <div id="bottom" className="sidebarY flex-center bottom collapsed">
               <div className="sidebar-content rounded-rect flex-center">
                 <div className='rounded-rect' style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-evenly', alignItems: 'center', width: '100%', height: '100%' }}>
@@ -574,6 +662,37 @@ function App() {
               </div>
             </div>
           </>) : null}
+          {current === 'sse' ? (
+            <div id="right" className="sidebar flex-center right collapsed">
+              <div className="sidebar-content rounded-rect flex-center">
+                <div style={{ position: 'relative' }}>
+                  <table className="stats-table">
+                    <thead>
+                      <tr>
+                        <th>Fact</th>
+                        <th>Source</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {
+                        facts.map((fact, i) =>
+                          <tr key={i}>
+                            <td>{fact.info}</td>
+                            <td>{fact.source}</td>
+                          </tr>
+                        )
+                      }
+                    </tbody>
+                  </table>
+                </div>
+                <div className="sidebar-toggle rounded-rect right" onClick={() => {
+                  toggleSidebar('right', map.current)
+                }}>
+                  &larr;
+                </div>
+              </div>
+            </div>
+          ) : null}
         </div>
       </Layout>
     </Layout >
